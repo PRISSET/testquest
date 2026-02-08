@@ -21,6 +21,18 @@ const rangeConfig: Record<Exclude<TimeRange, 'ALL'>, RangeConfig> = {
   '1M': { milliseconds: 30 * 24 * 60 * 60 * 1000, points: 30 }
 };
 
+const syntheticProfile: Record<
+  TimeRange,
+  { deltaRatio: number; minDeltaUsd: number; amplitudeRatio: number }
+> = {
+  '1H': { deltaRatio: 0.007, minDeltaUsd: 10, amplitudeRatio: 0.32 },
+  '6H': { deltaRatio: 0.018, minDeltaUsd: 24, amplitudeRatio: 0.4 },
+  '1D': { deltaRatio: 0.028, minDeltaUsd: 40, amplitudeRatio: 0.48 },
+  '1W': { deltaRatio: 0.055, minDeltaUsd: 75, amplitudeRatio: 0.56 },
+  '1M': { deltaRatio: 0.095, minDeltaUsd: 125, amplitudeRatio: 0.63 },
+  ALL: { deltaRatio: 0.14, minDeltaUsd: 180, amplitudeRatio: 0.7 }
+};
+
 const getCachedBalanceRaw = unstable_cache(
   async (publicKey: Address) => {
     const balanceRaw = await fetchTokenBalance(publicKey);
@@ -85,6 +97,38 @@ const getCachedChartSeries = unstable_cache(
   { revalidate: 60 }
 );
 
+function peakValue(points: ChartPoint[]): number {
+  if (!points.length) {
+    return 0;
+  }
+
+  return Math.max(...points.map((point) => point.valueUsd));
+}
+
+function hasMeaningfulLiveData({
+  balanceUsd,
+  chart1D,
+  chartRequested
+}: {
+  balanceUsd: number;
+  chart1D: ChartSeries;
+  chartRequested: ChartSeries;
+}): boolean {
+  const threshold = 1;
+  const chart1DPeak = peakValue(chart1D.points);
+  const chartRequestedPeak = peakValue(chartRequested.points);
+
+  if (balanceUsd > threshold) {
+    return true;
+  }
+
+  if (Math.abs(chart1D.changeUsd) > threshold || Math.abs(chartRequested.changeUsd) > threshold) {
+    return true;
+  }
+
+  return chart1DPeak > threshold || chartRequestedPeak > threshold;
+}
+
 function resolveChartTimeline(range: TimeRange, transfers: Array<{ timestamp: number }>) {
   const now = Date.now();
 
@@ -142,6 +186,7 @@ function buildChartPoints({
 }): ChartPoint[] {
   const timeline = buildTimestamps(range, transfers);
   const normalizedPublicKey = publicKey.toLowerCase();
+  const hasTransfers = transfers.length > 0;
 
   const transferFlows = transfers.map((tx) => {
     const tokens = toTokenUnits(tx.valueRaw);
@@ -177,7 +222,15 @@ function buildChartPoints({
   const flatThreshold = Math.max(currentValueUsd * 0.002, 0.0001);
 
   if (variance <= flatThreshold) {
-    return applySyntheticWaves(points, currentValueUsd);
+    if (!hasTransfers && currentValueUsd <= 1) {
+      points[points.length - 1] = {
+        ...points[points.length - 1],
+        valueUsd: currentValueUsd
+      };
+      return points;
+    }
+
+    return applySyntheticWaves(points, currentValueUsd, range);
   }
 
   points[points.length - 1] = {
@@ -188,13 +241,23 @@ function buildChartPoints({
   return points;
 }
 
-function applySyntheticWaves(points: ChartPoint[], anchorValue: number): ChartPoint[] {
+function applySyntheticWaves(
+  points: ChartPoint[],
+  anchorValue: number,
+  range: TimeRange
+): ChartPoint[] {
   if (!points.length) {
     return [];
   }
 
-  const amplitude = Math.max(anchorValue * 0.028, 1);
+  const profile = syntheticProfile[range];
+  const targetDelta = Math.max(anchorValue * profile.deltaRatio, profile.minDeltaUsd);
+  const effectiveDelta = Math.min(targetDelta, anchorValue * 0.9);
+  const startValue = Math.max(anchorValue - effectiveDelta, 0);
+  const amplitude = Math.max(effectiveDelta * profile.amplitudeRatio, 1);
   const output = points.map((point, index) => {
+    const progress = index / Math.max(points.length - 1, 1);
+    const trend = startValue + (anchorValue - startValue) * progress;
     const wave =
       Math.sin(index * 0.45 + 1.2) * amplitude +
       Math.cos(index * 0.21 + 0.4) * amplitude * 0.45 +
@@ -202,13 +265,13 @@ function applySyntheticWaves(points: ChartPoint[], anchorValue: number): ChartPo
 
     return {
       timestamp: point.timestamp,
-      valueUsd: Math.max(anchorValue + wave, 0)
+      valueUsd: Math.max(trend + wave, 0)
     };
   });
 
   output[0] = {
     ...output[0],
-    valueUsd: Math.max(anchorValue - amplitude * 0.6, 0)
+    valueUsd: startValue
   };
 
   output[output.length - 1] = {
@@ -235,11 +298,11 @@ export async function getDashboardData(
 
   const balance = Number(formatUnits(BigInt(balanceRawString), env.tokenDecimals));
   const balanceUsd = balance * tokenPrice;
-  const noLiveData =
-    balance <= Number.EPSILON &&
-    balanceUsd <= Number.EPSILON &&
-    chartRequested.currentValueUsd <= Number.EPSILON &&
-    chart1D.currentValueUsd <= Number.EPSILON;
+  const noLiveData = !hasMeaningfulLiveData({
+    balanceUsd,
+    chart1D,
+    chartRequested
+  });
 
   if (noLiveData) {
     return buildFallbackDashboard(range, {
@@ -278,9 +341,7 @@ export async function getChartData(
   const env = getConfig();
   const resolvedPublicKey = publicKey ?? env.trackedPublicKey;
   const series = await getCachedChartSeries(resolvedPublicKey, range);
-
-  const noLiveData =
-    series.currentValueUsd <= Number.EPSILON && Math.abs(series.changeUsd) <= Number.EPSILON;
+  const noLiveData = peakValue(series.points) <= 1 && Math.abs(series.changeUsd) <= 1;
 
   if (noLiveData) {
     return buildFallbackChart(range);

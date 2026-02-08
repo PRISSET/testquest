@@ -73,6 +73,14 @@ function parsePositiveNumber(name: string, value: string | undefined, fallback: 
   return parsed;
 }
 
+function resolveTokenSymbol(value: string | undefined): string {
+  const normalized = value?.trim().toUpperCase();
+  if (!normalized || normalized === 'TOKEN') {
+    return 'USDC';
+  }
+  return normalized;
+}
+
 export function getConfig(): AppConfig {
   if (cachedConfig) return cachedConfig;
 
@@ -87,7 +95,7 @@ export function getConfig(): AppConfig {
       ? parseAddress('DEFAULT_WITHDRAW_ADDRESS', defaultWithdraw)
       : undefined,
     tokenAddress: parseAddress('TOKEN_ADDRESS', required('TOKEN_ADDRESS')),
-    tokenSymbol: process.env.TOKEN_SYMBOL ?? 'TOKEN',
+    tokenSymbol: resolveTokenSymbol(process.env.TOKEN_SYMBOL),
     tokenDecimals: parsePositiveInt('TOKEN_DECIMALS', process.env.TOKEN_DECIMALS, 18),
     chainId: parsePositiveInt('CHAIN_ID', process.env.CHAIN_ID, 1),
     rpcUrl: required('RPC_URL'),

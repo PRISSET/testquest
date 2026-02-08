@@ -5,12 +5,12 @@ const fallbackTokenAddress = '0x2222222222222222222222222222222222222222' as con
 const mockCurrentValueUsd = 3361.42;
 
 const rangeChangeUsd: Record<TimeRange, number> = {
-  '1H': 42.37,
+  '1H': 68.15,
   '6H': 223.43,
-  '1D': 223.43,
-  '1W': 488.62,
-  '1M': 792.11,
-  'ALL': 1249.85
+  '1D': 318.9,
+  '1W': 612.74,
+  '1M': 918.36,
+  'ALL': 1385.22
 };
 
 interface FallbackOverrides {
